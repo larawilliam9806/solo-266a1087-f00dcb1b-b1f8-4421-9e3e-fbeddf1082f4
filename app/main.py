@@ -1,15 +1,16 @@
 """FastAPI HTTP 层：版本上传发布 + 时刻查询。"""
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import board, db
 from .gtfs import WEEKDAY_COLUMNS, format_gtfs_time, validate_version
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -224,6 +225,101 @@ def _stop_time_dict(row) -> dict:
         "arrival_clock": format_gtfs_time(arr % 86400),
         "departure_clock": format_gtfs_time(dep % 86400),
     }
+
+
+# ---------------- 电子站牌包 ----------------
+
+@app.get("/api/board/versions")
+def board_versions():
+    """可用于生成站牌包的已发布版本（新的在前）。"""
+    conn = db.connect()
+    try:
+        current = db.current_version_id(conn)
+        rows = conn.execute(
+            "SELECT id, label, status, published_at FROM versions "
+            "WHERE status = 'published' ORDER BY id DESC").fetchall()
+    finally:
+        conn.close()
+    return {"current_version_id": current,
+            "versions": [dict(r) for r in rows]}
+
+
+@app.get("/api/board/stops")
+def board_stops(version_id: int = Query(..., description="已发布版本 ID")):
+    """该版本中可作为发车源的站点。只返回至少有一条非末站停靠的站点。"""
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM versions WHERE id = ? AND status = 'published'",
+            (version_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"已发布版本 {version_id} 不存在")
+        rows = conn.execute(
+            "SELECT s.stop_id, s.stop_name, COUNT(*) AS departures "
+            "FROM stops s JOIN stop_times st "
+            "  ON st.version_id = s.version_id AND st.stop_id = s.stop_id "
+            "WHERE s.version_id = ? "
+            "  AND st.stop_sequence < ("
+            "    SELECT MAX(st2.stop_sequence) FROM stop_times st2 "
+            "    WHERE st2.version_id = st.version_id "
+            "      AND st2.trip_id = st.trip_id) "
+            "GROUP BY s.stop_id, s.stop_name "
+            "ORDER BY s.stop_id",
+            (version_id,)).fetchall()
+    finally:
+        conn.close()
+    return {"version_id": version_id,
+            "stops": [dict(r) for r in rows]}
+
+
+@app.get("/api/board/package")
+def board_package(
+    version_id: int = Query(..., description="已发布版本 ID"),
+    stop_id: str = Query(..., description="站点 ID"),
+    start_date: str = Query(..., description="起始自然日，YYYY-MM-DD（北京时间）"),
+    days: int = Query(1, description="连续自然日数，1～31"),
+):
+    """下载站牌 JSON。按实际发车日归入所选自然日，每条记录可追溯原运营日。"""
+    start = board.parse_iso_date(start_date)
+    if start is None:
+        raise HTTPException(422, f"start_date '{start_date}' 不是合法的 YYYY-MM-DD 日期")
+
+    conn = db.connect()
+    try:
+        try:
+            package = board.build_board_package(conn, version_id, stop_id,
+                                                start, days)
+        except board.BoardRequestError as exc:
+            raise HTTPException(exc.status_code, exc.message)
+    finally:
+        conn.close()
+
+    filename = f"board-{stop_id}-{start.isoformat()}-{days}d-v{version_id}.json"
+    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+    return JSONResponse(
+        package,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/board/validate")
+def board_validate(package: dict = Body(...)):
+    """离线校验一个站牌包；有错时逐条说明原因。"""
+    problems = board.validate_package(package)
+    error_count = sum(1 for p in problems if p["severity"] == "error")
+    return {"ok": error_count == 0,
+            "error_count": error_count,
+            "warning_count": sum(1 for p in problems if p["severity"] == "warning"),
+            "problems": problems}
+
+
+@app.post("/api/board/expand")
+def board_expand(package: dict = Body(...)):
+    """服务端还原站牌包（与网页离线还原同一套校验与展开逻辑）。"""
+    try:
+        return board.expand_package(package)
+    except board.PackageError as exc:
+        raise HTTPException(422, detail={"message": "包有错，无法还原",
+                                         "problems": exc.errors})
 
 
 # ---------------- 网页 ----------------

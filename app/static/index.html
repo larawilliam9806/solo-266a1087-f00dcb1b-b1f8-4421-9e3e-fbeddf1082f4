@@ -43,12 +43,30 @@
   .nextday { color: var(--red); font-size: 12px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 24px; }
   code { background: #f1f3f4; padding: 1px 5px; border-radius: 3px; }
+  .drop { border: 2px dashed var(--border); border-radius: 8px; padding: 26px;
+          text-align: center; color: #5f6368; font-size: 14px; margin-top: 12px;
+          background: #fafafa; }
+  .drop.hot { border-color: var(--blue); background: #e8f0fe; color: var(--blue); }
+  .pkg-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pkg-list button { border: 1px solid var(--border); background: #fff; border-radius:
+          16px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
+  .pkg-list button.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .badge { display: inline-block; background: #e8f0fe; color: var(--blue);
+           border-radius: 10px; padding: 1px 8px; font-size: 12px; margin-left: 6px; }
+  .day { background: #fff; border: 1px solid var(--border); border-radius: 8px;
+         padding: 12px 16px; margin-top: 12px; }
+  .day h3 { margin: 0 0 6px; font-size: 14px; }
+  .errors { color: var(--red); font-size: 13px; margin-top: 10px; }
+  .errors li { margin: 3px 0; }
+  .warn { color: #b06000; font-size: 13px; margin-top: 8px; }
+  .offline-ok { color: var(--green); font-weight: 600; }
 </style>
 </head>
 <body>
 <header><h1>🚌 公交 GTFS 时刻表发布系统</h1></header>
 <nav>
   <button data-tab="query" class="active">时刻查询</button>
+  <button data-tab="board">站牌发车包</button>
   <button data-tab="publish">发布新版本</button>
   <button data-tab="versions">版本记录</button>
 </nav>
@@ -71,6 +89,52 @@
     <button class="primary" id="q-btn">查询</button>
     <span class="muted" id="q-meta"></span>
     <div id="q-result"></div>
+  </div>
+</section>
+
+<!-- ============ 站牌发车包 ============ -->
+<section id="tab-board" class="panel">
+  <div class="card">
+    <h2>下载站牌发车包</h2>
+    <p class="muted">选择已发布的运行图、一个站点和连续 1～31 个自然日，生成可离线使用的
+      JSON 包。只纳入该站的<b>非末站停靠</b>发车；跨午夜班次按北京时间的<b>实际发车日</b>
+      归入。同一钟点的车分别列出。</p>
+    <div class="grid">
+      <div>
+        <label>运行图（已发布版本）</label>
+        <select id="b-version"></select>
+      </div>
+      <div>
+        <label>站点</label>
+        <select id="b-stop"></select>
+      </div>
+      <div>
+        <label>起始自然日（北京时间）</label>
+        <input type="date" id="b-start">
+      </div>
+      <div>
+        <label>连续天数</label>
+        <input type="number" id="b-days" min="1" max="31" value="1">
+      </div>
+    </div>
+    <button class="primary" id="b-btn">生成并下载</button>
+    <button class="primary" id="b-preview"
+            style="background:#fff;color:#1a73e8;border:1px solid #1a73e8;margin-left:8px">
+      生成并预览</button>
+    <span class="muted" id="b-meta"></span>
+    <div id="b-result"></div>
+  </div>
+
+  <div class="card">
+    <h2>离线还原站牌</h2>
+    <p class="muted">加载网页后即使断网，也可打开站牌 JSON，按自然日还原发车表并显示来源版号。
+      新版发布后，旧包仍按包内数据还原。包有错时会逐条说明原因；已成功打开的包仍可继续查看。</p>
+    <div class="drop" id="b-drop">把站牌 JSON 拖到这里，或点击选择文件
+      <input type="file" id="b-file" accept=".json,application/json" style="display:none">
+    </div>
+    <div class="pkg-list" id="b-opened"></div>
+    <div id="b-error"></div>
+    <div id="b-restored"></div>
   </div>
 </section>
 
@@ -115,6 +179,7 @@ document.querySelectorAll("nav button").forEach(btn => {
     $("tab-" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "versions") loadVersions();
     if (btn.dataset.tab === "query") loadRoutes();
+    if (btn.dataset.tab === "board") loadBoardOptions();
   };
 });
 
@@ -159,6 +224,511 @@ $("q-btn").onclick = async () => {
         </table>
       </div>`).join("");
 };
+
+// ---------- 站牌发车包 ----------
+const WEEKDAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+const WEEKDAY_LABELS = {monday:"周一",tuesday:"周二",wednesday:"周三",thursday:"周四",
+  friday:"周五",saturday:"周六",sunday:"周日"};
+const BOARD_SCHEMA = "gtfs-stop-board";
+const BOARD_SCHEMA_VERSION = 1;
+const MAX_DAYS = 31;
+
+$("b-start").value = new Date().toISOString().slice(0, 10);
+
+// 纯整数日期运算，不依赖本地时区 / Date 对 0-99 年的特殊处理
+function daysFromCivil(y, m, d) {
+  y -= m <= 2 ? 1 : 0;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+function civilFromDays(z) {
+  z += 719468;
+  const era = Math.floor(z / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) -
+    Math.floor(doe / 146096)) / 365);
+  const y = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const m = mp + (mp < 10 ? 3 : -9);
+  return [y + (m <= 2 ? 1 : 0), m, d];
+}
+const pad2 = (n) => String(n).padStart(2, "0");
+function isoAdd(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const [yy, mm, dd] = civilFromDays(daysFromCivil(y, m, d) + n);
+  return `${String(yy).padStart(4, "0")}-${pad2(mm)}-${pad2(dd)}`;
+}
+function weekdayOf(iso) {           // 与 Python date.weekday() 一致
+  const [y, m, d] = iso.split("-").map(Number);
+  return WEEKDAYS[((daysFromCivil(y, m, d) + 3) % 7 + 7) % 7];
+}
+function isValidDate(iso) {
+  if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  return isoAdd(iso, 0) === iso;
+}
+function entryKey(e) {
+  return [e.route_id, e.trip_id, e.stop_sequence, e.departure_clock, e.day_offset].join("\u0001");
+}
+function entrySort(a, b) {
+  return (a.departure_clock || "").localeCompare(b.departure_clock || "") ||
+    String(a.route_id || "").localeCompare(String(b.route_id || "")) ||
+    String(a.trip_id || "").localeCompare(String(b.trip_id || "")) ||
+    Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0) ||
+    Number(a.day_offset || 0) - Number(b.day_offset || 0);
+}
+
+async function loadBoardOptions() {
+  const vsel = $("b-version");
+  try {
+    const res = await fetch("/api/board/versions");
+    const data = await res.json();
+    if (!data.versions.length) {
+      vsel.innerHTML = "<option value=''>（还没有已发布版本）</option>";
+      $("b-stop").innerHTML = "<option value=''>—</option>";
+      return;
+    }
+    vsel.innerHTML = data.versions.map(v =>
+      `<option value="${v.id}">v${v.id} · ${v.label}${v.id === data.current_version_id ? "（当前正式版）" : ""}</option>`).join("");
+    $("b-meta").textContent = "当前正式版：v" + data.current_version_id;
+    loadBoardStops();
+  } catch (e) {
+    vsel.innerHTML = "<option value=''>加载失败</option>";
+  }
+}
+
+async function loadBoardStops() {
+  const vid = $("b-version").value;
+  const ssel = $("b-stop");
+  if (!vid) { ssel.innerHTML = "<option value=''>—</option>"; return; }
+  ssel.innerHTML = "<option value=''>加载中…</option>";
+  try {
+    const res = await fetch("/api/board/stops?version_id=" + encodeURIComponent(vid));
+    const data = await res.json();
+    if (!res.ok) { ssel.innerHTML = `<option value=''>（${data.detail || "加载失败"}）</option>`; return; }
+    if (!data.stops.length) { ssel.innerHTML = "<option value=''>（该版本没有可发车的站点）</option>"; return; }
+    ssel.innerHTML = data.stops.map(s =>
+      `<option value="${s.stop_id}">${s.stop_name || s.stop_id}（${s.stop_id}，${s.departures} 条发车）</option>`).join("");
+  } catch (e) { ssel.innerHTML = "<option value=''>加载失败</option>"; }
+}
+$("b-version").onchange = loadBoardStops;
+
+function boardParams() {
+  const vid = $("b-version").value, stop = $("b-stop").value;
+  const start = $("b-start").value, days = parseInt($("b-days").value, 10);
+  if (!vid || !stop) return {error: "请选择运行图和站点"};
+  if (!isValidDate(start)) return {error: "请选择合法的起始日期"};
+  if (!(days >= 1 && days <= MAX_DAYS)) return {error: "连续天数须为 1～31"};
+  return {vid, stop, start, days,
+          url: `/api/board/package?version_id=${encodeURIComponent(vid)}` +
+               `&stop_id=${encodeURIComponent(stop)}&start_date=${start}&days=${days}`};
+}
+
+$("b-btn").onclick = () => {
+  const p = boardParams(), box = $("b-result");
+  if (p.error) { box.innerHTML = `<div class="banner err">${p.error}</div>`; return; }
+  const a = document.createElement("a");
+  a.href = p.url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  box.innerHTML = `<div class="banner ok">已开始下载：${p.start} 起 ${p.days} 个自然日 · ${p.stop}。
+    <span class="muted">下载后的 JSON 可在下方「离线还原站牌」中打开，断网也能查看。</span></div>`;
+};
+
+$("b-preview").onclick = async () => {
+  const p = boardParams(), box = $("b-result");
+  if (p.error) { box.innerHTML = `<div class="banner err">${p.error}</div>`; return; }
+  try {
+    const res = await fetch(p.url);
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<div class="banner err">生成失败：${esc(data.detail || JSON.stringify(data))}</div>`;
+      return;
+    }
+    const warnings = validatePackage(data).filter(x => x.severity === "warning");
+    const st = data.stats || {};
+    box.innerHTML = `<div class="banner ok">已生成（未下载）：来源 v${esc(data.source_version.id)}
+      「${esc(data.source_version.label)}」· ${esc(data.stop.stop_name || data.stop.stop_id)}
+      · ${esc(data.range.start_date)} 起 ${data.range.days} 天
+      · 模板 ${st.template_records ?? "-"} + 新增 ${st.add_records ?? "-"} + 删除 ${st.remove_records ?? "-"}
+      = ${st.total_records ?? "-"} 条发车记录（最少 ${st.minimum_records ?? "-"} 条）</div>
+      ${warnings.length ? `<div class="warn">${warnings.map(x => esc(x.message)).join("；")}</div>` : ""}`;
+    renderRestored(expandPackage(data), "预览（来自服务端生成）· ");
+  } catch (e) {
+    box.innerHTML = `<div class="banner err">生成失败：${esc(e.message)}</div>`;
+  }
+};
+
+// ----- 离线校验（与 app/board.py 同一规则，纯前端、不发请求） -----
+function issue(path, message, severity) {
+  return {path, message, severity: severity || "error"};
+}
+const CLOCK_RE = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+const isInt = (v) => typeof v === "number" && Number.isInteger(v);
+const isStr = (v) => typeof v === "string";
+
+function validateEntry(e, path, errors) {
+  if (!e || typeof e !== "object" || Array.isArray(e)) {
+    errors.push(issue(path, "发车记录必须是 JSON 对象")); return;
+  }
+  for (const f of ["route_id", "trip_id"]) {
+    if (!isStr(e[f]) || !e[f].trim()) errors.push(issue(path + "." + f, f + " 必须是非空字符串"));
+  }
+  if (!isInt(e.stop_sequence) || e.stop_sequence < 0)
+    errors.push(issue(path + ".stop_sequence", "stop_sequence 必须是非负整数"));
+  if (!isStr(e.departure_clock) || !CLOCK_RE.test(e.departure_clock))
+    errors.push(issue(path + ".departure_clock", "departure_clock 必须是 00:00:00～23:59:59 的钟点"));
+  if (!isInt(e.day_offset) || e.day_offset < 0)
+    errors.push(issue(path + ".day_offset", "day_offset 必须是非负整数（相对运营日的天数）"));
+}
+function validateEntryList(v, path, errors) {
+  if (!Array.isArray(v)) { errors.push(issue(path, "必须是 JSON 数组")); return []; }
+  v.forEach((e, i) => validateEntry(e, `${path}[${i}]`, errors));
+  return v;
+}
+function claimedMinimum(weekdays) {
+  let total = 0;
+  for (const name of Object.keys(weekdays)) {
+    const g = weekdays[name];
+    if (!g || typeof g !== "object") continue;
+    const days = Array.isArray(g.days) ? g.days : [];
+    const m = days.length;
+    const templateKeys = new Set((g.template || []).filter(e => e && typeof e === "object").map(entryKey));
+    const freq = new Map();
+    for (const day of days) {
+      if (!day || typeof day !== "object") continue;
+      const final = new Set(templateKeys);
+      for (const e of day.remove || []) if (e && typeof e === "object") final.delete(entryKey(e));
+      for (const e of day.add || []) if (e && typeof e === "object") final.add(entryKey(e));
+      for (const k of final) freq.set(k, (freq.get(k) || 0) + 1);
+    }
+    for (const p of freq.values()) total += Math.min(p, 1 + m - p);
+  }
+  return total;
+}
+
+function validatePackage(data) {
+  const errors = [];
+  if (!data || typeof data !== "object" || Array.isArray(data))
+    return [issue("$", "包顶层必须是 JSON 对象")];
+  if (data.schema !== BOARD_SCHEMA)
+    errors.push(issue("$.schema", `schema 必须为 '${BOARD_SCHEMA}'`));
+  if (typeof data.schema_version !== "number" || data.schema_version !== BOARD_SCHEMA_VERSION)
+    errors.push(issue("$.schema_version",
+      `不支持的包格式版本 ${JSON.stringify(data.schema_version)}；本页面支持 ${BOARD_SCHEMA_VERSION}`));
+  if (data.timezone != null && data.timezone !== "Asia/Shanghai" && data.timezone !== "北京时间")
+    errors.push(issue("$.timezone", "timezone 必须为 Asia/Shanghai（北京时间）"));
+
+  const src = data.source_version;
+  if (!src || typeof src !== "object") errors.push(issue("$.source_version", "缺少来源版号 source_version"));
+  else {
+    if (!isInt(src.id) && !(isStr(src.id) && src.id))
+      errors.push(issue("$.source_version.id", "来源版号 id 不能为空"));
+    if (!isStr(src.label) || !src.label)
+      errors.push(issue("$.source_version.label", "来源版本名称不能为空"));
+  }
+  if (!data.stop || typeof data.stop !== "object" || !isStr(data.stop.stop_id) || !data.stop.stop_id)
+    errors.push(issue("$.stop.stop_id", "缺少站点 stop_id"));
+
+  const rng = data.range;
+  let start = null, days = null, expected = [];
+  if (!rng || typeof rng !== "object") errors.push(issue("$.range", "缺少日期范围 range"));
+  else {
+    if (!isValidDate(rng.start_date)) errors.push(issue("$.range.start_date", "start_date 必须是合法的 YYYY-MM-DD 日期"));
+    else start = rng.start_date;
+    if (!isInt(rng.days) || rng.days < 1 || rng.days > MAX_DAYS) {
+      errors.push(issue("$.range.days", `days 必须是 1～${MAX_DAYS} 的整数`));
+    } else days = rng.days;
+    if (start && days) {
+      for (let i = 0; i < days; i++) expected.push(isoAdd(start, i));
+      if (rng.end_date != null && rng.end_date !== expected[expected.length - 1])
+        errors.push(issue("$.range.end_date",
+          `end_date 应为 ${expected[expected.length - 1]}，与实际范围不一致`));
+    }
+  }
+
+  let weekdays = data.weekdays;
+  if (!weekdays || typeof weekdays !== "object" || Array.isArray(weekdays)) {
+    errors.push(issue("$.weekdays", "缺少按星期几组织的模板 weekdays"));
+    weekdays = {};
+  }
+  for (const name of Object.keys(weekdays))
+    if (!WEEKDAYS.includes(name)) errors.push(issue("$.weekdays." + name, `未知的星期几 '${name}'`));
+
+  const seen = new Map();
+  for (const name of WEEKDAYS) {
+    if (!(name in weekdays)) continue;
+    const g = weekdays[name], path = "$.weekdays." + name;
+    if (!g || typeof g !== "object") { errors.push(issue(path, "星期几模板必须是 JSON 对象")); continue; }
+    const template = validateEntryList(g.template, path + ".template", errors);
+    const templateKeys = new Set();
+    template.forEach((e, i) => {
+      if (!e || typeof e !== "object") return;
+      const k = entryKey(e);
+      if (templateKeys.has(k)) errors.push(issue(`${path}.template[${i}]`, "模板内发车记录重复"));
+      templateKeys.add(k);
+    });
+    const dayList = g.days;
+    if (!Array.isArray(dayList)) { errors.push(issue(path + ".days", "必须按自然日列出 days 数组")); continue; }
+    if (start && days) {
+      const want = expected.filter(iso => weekdayOf(iso) === name).length;
+      if (dayList.length !== want)
+        errors.push(issue(path + ".days", `应有 ${want} 个${name}，实际 ${dayList.length} 个`));
+    }
+    dayList.forEach((day, i) => {
+      const dp = `${path}.days[${i}]`;
+      if (!day || typeof day !== "object") { errors.push(issue(dp, "自然日项必须是 JSON 对象")); return; }
+      const iso = day.date;
+      if (!isValidDate(iso)) { errors.push(issue(dp + ".date", "date 必须是合法的 YYYY-MM-DD 日期")); return; }
+      if (weekdayOf(iso) !== name)
+        errors.push(issue(dp + ".date", `${iso} 不是${name}，放错了模板`));
+      if (seen.has(iso)) errors.push(issue(dp + ".date", `日期 ${iso} 重复（已出现在 ${seen.get(iso)}）`));
+      seen.set(iso, dp);
+      if (expected.length && !expected.includes(iso))
+        errors.push(issue(dp + ".date", `日期 ${iso} 不在所选范围内`));
+
+      const add = validateEntryList(day.add, dp + ".add", errors);
+      const remove = validateEntryList(day.remove, dp + ".remove", errors);
+      const addKeys = new Set();
+      add.forEach((e, j) => {
+        if (!e || typeof e !== "object") return;
+        const k = entryKey(e);
+        if (addKeys.has(k)) errors.push(issue(`${dp}.add[${j}]`, "新增记录重复"));
+        if (templateKeys.has(k)) errors.push(issue(`${dp}.add[${j}]`, "新增记录已在模板中，应删除该 add"));
+        addKeys.add(k);
+      });
+      const removeKeys = new Set();
+      remove.forEach((e, j) => {
+        if (!e || typeof e !== "object") return;
+        const k = entryKey(e);
+        if (removeKeys.has(k)) errors.push(issue(`${dp}.remove[${j}]`, "删除记录重复"));
+        if (!templateKeys.has(k)) errors.push(issue(`${dp}.remove[${j}]`, "删除记录不在模板中，应改用 add 或删除该 remove"));
+        removeKeys.add(k);
+      });
+    });
+  }
+
+  if (expected.length) {
+    for (const iso of expected) if (!seen.has(iso)) errors.push(issue("$.weekdays", `日期 ${iso} 没有对应的日增删记录`));
+    const extra = [...seen.keys()].filter(iso => !expected.includes(iso));
+    if (extra.length) errors.push(issue("$.weekdays", "范围外日期: " + extra.sort().join(", ")));
+  }
+
+  if (data.trips != null) {
+    if (typeof data.trips !== "object" || Array.isArray(data.trips)) errors.push(issue("$.trips", "trips 必须是 JSON 对象"));
+    else {
+      for (const name of Object.keys(weekdays)) {
+        const g = weekdays[name];
+        if (!g || typeof g !== "object") continue;
+        let entries = [...(g.template || [])];
+        for (const day of g.days || []) if (day && typeof day === "object") entries = entries.concat(day.add || [], day.remove || []);
+        entries.forEach(e => {
+          if (e && typeof e === "object" && e.trip_id && !(e.trip_id in data.trips))
+            errors.push(issue("$.trips." + e.trip_id, `班次 '${e.trip_id}' 缺少线路/方向元数据`));
+        });
+      }
+    }
+  }
+
+  const stats = data.stats;
+  if (stats && typeof stats === "object") {
+    const actual = {template_records: 0, add_records: 0, remove_records: 0, total_records: 0};
+    for (const g of Object.values(weekdays)) {
+      if (!g || typeof g !== "object") continue;
+      actual.template_records += (g.template || []).length;
+      for (const day of g.days || []) {
+        if (!day || typeof day !== "object") continue;
+        actual.add_records += (day.add || []).length;
+        actual.remove_records += (day.remove || []).length;
+      }
+    }
+    actual.total_records = actual.template_records + actual.add_records + actual.remove_records;
+    for (const f of Object.keys(actual)) {
+      if (stats[f] != null && stats[f] !== actual[f])
+        errors.push(issue("$.stats." + f, `统计为 ${stats[f]} 条，实际 ${actual[f]} 条`, "warning"));
+    }
+  }
+
+  if (!errors.some(x => x.severity === "error")) {
+    const minimum = claimedMinimum(weekdays);
+    let actual = 0;
+    for (const g of Object.values(weekdays)) {
+      if (!g || typeof g !== "object") continue;
+      actual += (g.template || []).length;
+      for (const day of g.days || []) if (day && typeof day === "object")
+        actual += (day.add || []).length + (day.remove || []).length;
+    }
+    if (actual !== minimum)
+      errors.push(issue("$.weekdays",
+        `模板与增删共 ${actual} 条发车记录，不是最少；按每个星期几选择最优模板应为 ${minimum} 条`, "error"));
+  }
+  return errors;
+}
+
+// ----- 离线还原（只读包内数据，不访问网络） -----
+function expandPackage(data) {
+  const blocking = validatePackage(data).filter(p => p.severity === "error");
+  if (blocking.length) throw blocking;
+  const start = data.range.start_date, days = data.range.days;
+  const meta = data.trips || {};
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const iso = isoAdd(start, i), name = weekdayOf(iso);
+    const group = data.weekdays[name];
+    const dayRec = group.days.find(d => d.date === iso);
+    const final = new Map();
+    for (const e of group.template || []) final.set(entryKey(e), Object.assign({}, e));
+    for (const e of dayRec.remove || []) final.delete(entryKey(e));
+    for (const e of dayRec.add || []) final.set(entryKey(e), Object.assign({}, e));
+    const departures = [...final.values()].sort(entrySort).map(e => {
+      const item = Object.assign({}, e);
+      item.service_date = isoAdd(iso, -e.day_offset);
+      item.route = meta[e.trip_id] || {};
+      return item;
+    });
+    out.push({date: iso, weekday: name, weekday_label: WEEKDAY_LABELS[name], departures});
+  }
+  return {schema: BOARD_SCHEMA, schema_version: BOARD_SCHEMA_VERSION,
+          source_version: data.source_version, stop: data.stop, range: data.range, days: out};
+}
+
+const openedPackages = [];   // 已成功打开的包会保留，即使之后打开了坏包
+let activePackageIndex = -1;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+function renderRestored(result, note) {
+  const sv = result.source_version;
+  const board = result.stop;
+  const html = `
+    <div class="banner ok">${esc(note || "")}来源版号 <b>v${esc(sv.id)}</b>「${esc(sv.label)}」
+      ${sv.published_at ? `<span class="muted">（发布于 ${esc(sv.published_at)}）</span>` : ""}
+      <span class="badge">${esc(board.stop_name || board.stop_id)} · ${esc(board.stop_id)}</span>
+      <span class="muted">· ${esc(result.range.start_date)} 起 ${result.range.days} 个自然日</span></div>
+    ${result.days.map(day => `
+      <div class="day">
+        <h3>${esc(day.date)}（${esc(day.weekday_label)}）
+          <span class="muted">${day.departures.length} 班</span></h3>
+        ${day.departures.length === 0 ? '<p class="muted">当日无发车</p>' : `
+        <table>
+          <tr><th>发车钟点</th><th>线路</th><th>班次</th><th>停站序号</th><th>原运营日</th><th>方向</th></tr>
+          ${day.departures.map(d => {
+            const r = d.route || {};
+            const routeName = r.route_short_name || d.route_id;
+            const sign = d.day_offset > 0 ? ` <span class="nextday">运营日 +${d.day_offset} 天</span>` : "";
+            return `<tr>
+              <td><b>${esc(d.departure_clock)}</b>${sign}</td>
+              <td>${esc(routeName)}${r.route_long_name ? ` <span class="muted">${esc(r.route_long_name)}</span>` : ""}</td>
+              <td>${esc(d.trip_id)}</td>
+              <td>${esc(d.stop_sequence)}</td>
+              <td>${esc(d.service_date)}</td>
+              <td>${esc(r.headsign || "")}</td>
+            </tr>`;
+          }).join("")}
+        </table>`}
+      </div>`).join("")}`;
+  $("b-restored").innerHTML = html;
+}
+
+function renderOpened() {
+  $("b-opened").innerHTML = openedPackages.map((p, i) =>
+    `<button data-i="${i}" class="${i === activePackageIndex ? "active" : ""}">v${esc(p.id)} · ${esc(p.stop)} · ${esc(p.start)}（${p.days} 天）</button>`).join("");
+  $("b-opened").querySelectorAll("button").forEach(btn => {
+    btn.onclick = () => {
+      activePackageIndex = Number(btn.dataset.i);
+      renderOpened();
+      renderRestored(openedPackages[activePackageIndex].result, "已从本地包还原（离线可用）· ");
+    };
+  });
+}
+
+function showPackageError(html) {
+  $("b-error").innerHTML = html;
+  $("b-restored").innerHTML = openedPackages.length
+    ? $("b-restored").innerHTML
+    : '<p class="muted">还没有成功打开的包。修正上面的问题后重新打开即可。</p>';
+}
+
+async function openPackageFile(file) {
+  let text, data;
+  $("b-error").innerHTML = "";
+  try {
+    text = await file.text();
+  } catch (e) {
+    showPackageError('<div class="banner err">无法读取文件</div>'); return;
+  }
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    showPackageError(`<div class="banner err">包有错，无法打开：</div><ul class="errors">
+      <li><code>$</code> 不是合法的 JSON（${esc(e.message)}）</li></ul>
+      ${openedPackages.length ? '<p class="muted">已成功打开的包仍保留在上方，可继续查看。</p>' : ""}`);
+    return;
+  }
+  const problems = validatePackage(data);
+  const blocking = problems.filter(p => p.severity === "error");
+  const warnings = problems.filter(p => p.severity === "warning");
+  if (blocking.length) {
+    showPackageError(`<div class="banner err">包有错，无法还原${openedPackages.length ? "（已打开的包仍可查看）" : ""}：</div>
+      <ul class="errors">${blocking.map(p => `<li><code>${esc(p.path)}</code> ${esc(p.message)}</li>`).join("")}</ul>`);
+    return;
+  }
+  let result;
+  try {
+    result = expandPackage(data);
+  } catch (e) {
+    showPackageError(`<div class="banner err">包有错，无法还原：</div><ul class="errors">
+      ${(Array.isArray(e) ? e : [{path: "$", message: String(e)}]).map(p =>
+        `<li><code>${esc(p.path)}</code> ${esc(p.message)}</li>`).join("")}</ul>`);
+    return;
+  }
+  const sv = result.source_version;
+  openedPackages.unshift({
+    id: sv.id, label: sv.label, stop: result.stop.stop_name || result.stop.stop_id,
+    start: result.range.start_date, days: result.range.days, result,
+  });
+  activePackageIndex = 0;
+  renderOpened();
+  renderRestored(result, warnings.length ? "已还原，但有提示：" + warnings.map(w => w.message).join("；") + " · " : "已从本地包还原（离线可用）· ");
+}
+
+const drop = $("b-drop");
+drop.onclick = () => $("b-file").click();
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("hot"); };
+drop.ondragleave = () => drop.classList.remove("hot");
+drop.ondrop = (e) => {
+  e.preventDefault();
+  drop.classList.remove("hot");
+  if (e.dataTransfer.files.length) openPackageFile(e.dataTransfer.files[0]);
+};
+$("b-file").onchange = () => {
+  if ($("b-file").files.length) openPackageFile($("b-file").files[0]);
+  $("b-file").value = "";
+};
+
+// 页面重新加载后，断网时也能打开本地已下载的 JSON（文件选择器不依赖网络）
+async function initBoard() {
+  if (!navigator.onLine) {
+    $("b-version").innerHTML = "<option value=''>（离线：仅可打开本地包）</option>";
+    $("b-stop").innerHTML = "<option value=''>—</option>";
+    $("b-meta").textContent = "当前离线：下载功能不可用，但本地包可正常打开还原。";
+    return;
+  }
+  await loadBoardOptions();
+}
+initBoard();
+window.addEventListener("offline", () => {
+  $("b-meta").textContent = "当前离线：下载功能不可用，但本地包可正常打开还原。";
+});
 
 // ---------- 发布 ----------
 $("p-btn").onclick = async () => {

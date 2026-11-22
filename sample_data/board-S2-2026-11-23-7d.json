@@ -1,0 +1,225 @@
+{
+  "schema": "gtfs-stop-board",
+  "schema_version": 1,
+  "timezone": "Asia/Shanghai",
+  "generated_at": "2026-11-22T03:11:35Z",
+  "source_version": {
+    "id": 1,
+    "label": "样例运行图",
+    "published_at": "2026-11-22T03:11:35Z"
+  },
+  "stop": {
+    "stop_id": "S2",
+    "stop_name": "人民广场"
+  },
+  "range": {
+    "start_date": "2026-11-23",
+    "end_date": "2026-11-29",
+    "days": 7
+  },
+  "weekdays": {
+    "monday": {
+      "weekday": "monday",
+      "weekday_label": "周一",
+      "template": [
+        {
+          "route_id": "R1",
+          "trip_id": "T1",
+          "stop_sequence": 2,
+          "departure_clock": "08:12:00",
+          "day_offset": 0
+        },
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-23",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "tuesday": {
+      "weekday": "tuesday",
+      "weekday_label": "周二",
+      "template": [
+        {
+          "route_id": "R1",
+          "trip_id": "T1",
+          "stop_sequence": 2,
+          "departure_clock": "08:12:00",
+          "day_offset": 0
+        },
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-24",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "wednesday": {
+      "weekday": "wednesday",
+      "weekday_label": "周三",
+      "template": [
+        {
+          "route_id": "R1",
+          "trip_id": "T1",
+          "stop_sequence": 2,
+          "departure_clock": "08:12:00",
+          "day_offset": 0
+        },
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-25",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "thursday": {
+      "weekday": "thursday",
+      "weekday_label": "周四",
+      "template": [
+        {
+          "route_id": "R1",
+          "trip_id": "T1",
+          "stop_sequence": 2,
+          "departure_clock": "08:12:00",
+          "day_offset": 0
+        },
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-26",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "friday": {
+      "weekday": "friday",
+      "weekday_label": "周五",
+      "template": [
+        {
+          "route_id": "R1",
+          "trip_id": "T1",
+          "stop_sequence": 2,
+          "departure_clock": "08:12:00",
+          "day_offset": 0
+        },
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-27",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "saturday": {
+      "weekday": "saturday",
+      "weekday_label": "周六",
+      "template": [
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-28",
+          "add": [],
+          "remove": []
+        }
+      ]
+    },
+    "sunday": {
+      "weekday": "sunday",
+      "weekday_label": "周日",
+      "template": [
+        {
+          "route_id": "R2",
+          "trip_id": "N1",
+          "stop_sequence": 2,
+          "departure_clock": "23:58:00",
+          "day_offset": 0
+        }
+      ],
+      "days": [
+        {
+          "date": "2026-11-29",
+          "add": [],
+          "remove": []
+        }
+      ]
+    }
+  },
+  "trips": {
+    "N1": {
+      "route_id": "R2",
+      "route_short_name": "夜1路",
+      "route_long_name": "夜班环线",
+      "route_type": 3,
+      "headsign": "夜班环线",
+      "direction_id": 0
+    },
+    "T1": {
+      "route_id": "R1",
+      "route_short_name": "1路",
+      "route_long_name": "中央车站-机场",
+      "route_type": 3,
+      "headsign": "机场方向",
+      "direction_id": 0
+    }
+  },
+  "stats": {
+    "days": 7,
+    "departures": 12,
+    "template_records": 12,
+    "add_records": 0,
+    "remove_records": 0,
+    "total_records": 12,
+    "minimum_records": 12,
+    "is_minimal": true
+  }
+}
