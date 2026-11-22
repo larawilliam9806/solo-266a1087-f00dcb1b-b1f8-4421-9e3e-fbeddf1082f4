@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公交 GTFS 时刻表发布</title>
+<style>
+  :root { --blue:#1a73e8; --red:#d93025; --green:#1e8e3e; --border:#dadce0; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0; background: #f5f6f7; color: #202124; }
+  header { background: var(--blue); color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 18px; }
+  nav { background: #fff; border-bottom: 1px solid var(--border); padding: 0 24px; }
+  nav button { background: none; border: none; padding: 12px 16px; font-size: 14px;
+               cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+  main { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+  section.panel { display: none; }
+  section.panel.active { display: block; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px;
+          padding: 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  label { display: block; font-size: 13px; margin: 10px 0 4px; color: #5f6368; }
+  input[type=text], input[type=date], select {
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px;
+    font-size: 14px; min-width: 220px; }
+  input[type=file] { font-size: 13px; }
+  button.primary { background: var(--blue); color: #fff; border: none; border-radius: 4px;
+                   padding: 9px 20px; font-size: 14px; cursor: pointer; margin-top: 14px; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 12px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  th { background: #f1f3f4; }
+  .ok { color: var(--green); font-weight: 600; }
+  .bad { color: var(--red); font-weight: 600; }
+  .muted { color: #5f6368; font-size: 12px; }
+  .banner { padding: 10px 14px; border-radius: 4px; margin-top: 12px; font-size: 14px; }
+  .banner.ok { background: #e6f4ea; color: var(--green); }
+  .banner.err { background: #fce8e6; color: var(--red); }
+  .trip { margin-top: 18px; }
+  .trip h3 { font-size: 14px; margin: 0 0 6px; }
+  .nextday { color: var(--red); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 24px; }
+  code { background: #f1f3f4; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header><h1>🚌 公交 GTFS 时刻表发布系统</h1></header>
+<nav>
+  <button data-tab="query" class="active">时刻查询</button>
+  <button data-tab="publish">发布新版本</button>
+  <button data-tab="versions">版本记录</button>
+</nav>
+<main>
+
+<!-- ============ 时刻查询 ============ -->
+<section id="tab-query" class="panel active">
+  <div class="card">
+    <h2>按线路和运营日查询</h2>
+    <div class="grid">
+      <div>
+        <label>运营日</label>
+        <input type="date" id="q-date">
+      </div>
+      <div>
+        <label>线路</label>
+        <select id="q-route"></select>
+      </div>
+    </div>
+    <button class="primary" id="q-btn">查询</button>
+    <span class="muted" id="q-meta"></span>
+    <div id="q-result"></div>
+  </div>
+</section>
+
+<!-- ============ 发布 ============ -->
+<section id="tab-publish" class="panel">
+  <div class="card">
+    <h2>上传同一版本的 5 个 CSV</h2>
+    <p class="muted">整版校验（跨表引用、停站序号唯一、时刻递增、跨午夜时刻）全部通过才会发布；
+       任一错误都会保留当前正式版，并在此列出错误行。</p>
+    <label>版本名称</label>
+    <input type="text" id="p-label" placeholder="例如 2026-冬季运行图 v2">
+    <div class="grid">
+      <div><label>stops.csv</label><input type="file" id="f-stops" accept=".csv"></div>
+      <div><label>routes.csv</label><input type="file" id="f-routes" accept=".csv"></div>
+      <div><label>trips.csv</label><input type="file" id="f-trips" accept=".csv"></div>
+      <div><label>stop_times.csv</label><input type="file" id="f-stop_times" accept=".csv"></div>
+      <div><label>calendar.csv</label><input type="file" id="f-calendar" accept=".csv"></div>
+    </div>
+    <button class="primary" id="p-btn">校验并发布</button>
+    <div id="p-result"></div>
+  </div>
+</section>
+
+<!-- ============ 版本记录 ============ -->
+<section id="tab-versions" class="panel">
+  <div class="card">
+    <h2>版本记录 <button class="primary" style="margin:0 0 0 10px;padding:4px 12px" id="v-refresh">刷新</button></h2>
+    <div id="v-list"></div>
+  </div>
+</section>
+
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- 页签 ----------
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll("section.panel").forEach(s => s.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "versions") loadVersions();
+    if (btn.dataset.tab === "query") loadRoutes();
+  };
+});
+
+// ---------- 时刻查询 ----------
+$("q-date").value = new Date().toISOString().slice(0, 10);
+
+async function loadRoutes() {
+  const sel = $("q-route");
+  try {
+    const res = await fetch("/api/routes");
+    const data = await res.json();
+    if (!res.ok) { sel.innerHTML = "<option value=''>（" + (data.detail || "无数据") + "）</option>"; return; }
+    sel.innerHTML = data.routes.map(r =>
+      `<option value="${r.route_id}">${r.route_short_name || r.route_id} ${r.route_long_name || ""}</option>`).join("");
+    $("q-meta").textContent = "当前正式版：v" + data.version_id;
+  } catch (e) { sel.innerHTML = "<option>加载失败</option>"; }
+}
+
+$("q-btn").onclick = async () => {
+  const route = $("q-route").value, date = $("q-date").value;
+  const box = $("q-result");
+  if (!route || !date) { box.innerHTML = '<div class="banner err">请选择线路和运营日</div>'; return; }
+  const res = await fetch(`/api/routes/${encodeURIComponent(route)}/schedule?date=${date}`);
+  const data = await res.json();
+  if (!res.ok) { box.innerHTML = `<div class="banner err">${data.detail || "查询失败"}</div>`; return; }
+  if (data.trips.length === 0) {
+    box.innerHTML = '<div class="banner err">该运营日没有班次（线路在此日期无有效服务）</div>';
+    return;
+  }
+  box.innerHTML = `<p class="muted">版本 v${data.version_id} · ${data.date}（${data.weekday}）· 共 ${data.trip_count} 个班次</p>` +
+    data.trips.map(t => `
+      <div class="trip">
+        <h3>班次 ${t.trip_id}${t.headsign ? " · " + t.headsign : ""} <span class="muted">service: ${t.service_id}</span></h3>
+        <table>
+          <tr><th>序号</th><th>站点</th><th>到站</th><th>发车</th></tr>
+          ${t.stop_times.map(s => `<tr>
+            <td>${s.stop_sequence}</td>
+            <td>${s.stop_name} <span class="muted">${s.stop_id}</span></td>
+            <td>${s.arrival}${s.arrival_day_offset > 0 ? ` <span class="nextday">+${s.arrival_day_offset}天</span>` : ""}</td>
+            <td>${s.departure}${s.departure_day_offset > 0 ? ` <span class="nextday">+${s.departure_day_offset}天</span>` : ""}</td>
+          </tr>`).join("")}
+        </table>
+      </div>`).join("");
+};
+
+// ---------- 发布 ----------
+$("p-btn").onclick = async () => {
+  const label = $("p-label").value.trim();
+  const box = $("p-result");
+  if (!label) { box.innerHTML = '<div class="banner err">请填写版本名称</div>'; return; }
+  const fd = new FormData();
+  fd.append("label", label);
+  for (const name of ["stops", "routes", "trips", "stop_times", "calendar"]) {
+    const f = $("f-" + name).files[0];
+    if (!f) { box.innerHTML = `<div class="banner err">请选择 ${name}.csv</div>`; return; }
+    fd.append(name, f);
+  }
+  $("p-btn").disabled = true;
+  try {
+    const res = await fetch("/api/versions", { method: "POST", body: fd });
+    const data = await res.json();
+    if (res.ok) {
+      box.innerHTML = `<div class="banner ok">✔ 版本 v${data.version_id}「${label}」发布成功：
+        stops ${data.counts.stops} 行 · routes ${data.counts.routes} 行 · trips ${data.counts.trips} 行 ·
+        stop_times ${data.counts.stop_times} 行 · calendar ${data.counts.calendar} 行</div>`;
+    } else if (res.status === 422 && data.detail && data.detail.errors) {
+      const d = data.detail;
+      box.innerHTML = `<div class="banner err">✘ 校验失败（版本 v${d.version_id} 已记录为失败），
+        共 ${d.error_count} 个错误${d.truncated ? "（已截断）" : ""}，当前正式版保持不变：</div>
+        <table><tr><th>文件</th><th>行号</th><th>字段</th><th>错误</th></tr>
+        ${d.errors.map(e => `<tr><td>${e.file}</td><td>${e.row ?? "-"}</td>
+          <td>${e.field ?? "-"}</td><td>${e.message}</td></tr>`).join("")}
+        </table>`;
+    } else {
+      box.innerHTML = `<div class="banner err">发布失败：${JSON.stringify(data)}</div>`;
+    }
+  } finally {
+    $("p-btn").disabled = false;
+  }
+};
+
+// ---------- 版本记录 ----------
+async function loadVersions() {
+  const res = await fetch("/api/versions");
+  const data = await res.json();
+  const box = $("v-list");
+  if (!data.versions.length) { box.innerHTML = '<p class="muted">还没有任何版本</p>'; return; }
+  box.innerHTML = `<table><tr><th>ID</th><th>名称</th><th>状态</th><th>错误数</th><th>上传时间</th><th>发布时间</th><th></th></tr>
+    ${data.versions.map(v => `<tr>
+      <td>v${v.id}${v.id === data.current_version_id ? ' <span class="ok">●当前</span>' : ""}</td>
+      <td>${v.label}</td>
+      <td>${v.status === "published" ? '<span class="ok">已发布</span>' : '<span class="bad">失败</span>'}</td>
+      <td>${v.error_count}</td><td>${v.created_at}</td><td>${v.published_at || "-"}</td>
+      <td>${v.status === "failed" ? `<a href="#" onclick="showErrors(${v.id});return false">查看错误</a>` : ""}</td>
+    </tr>`).join("")}</table>
+    <div id="v-errors"></div>`;
+}
+
+async function showErrors(vid) {
+  const res = await fetch("/api/versions/" + vid);
+  const data = await res.json();
+  $("v-errors").innerHTML = `<h3>v${vid} 错误明细</h3>
+    <table><tr><th>文件</th><th>行号</th><th>字段</th><th>错误</th></tr>
+    ${data.errors.map(e => `<tr><td>${e.file}</td><td>${e.row ?? "-"}</td>
+      <td>${e.field ?? "-"}</td><td>${e.message}</td></tr>`).join("")}</table>`;
+}
+
+loadRoutes();
+</script>
+</body>
+</html>
